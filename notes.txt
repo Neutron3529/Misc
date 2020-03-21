@@ -1,0 +1,300 @@
+#MNIST for mxnet
+
+import mxnet as mx
+import gzip,struct
+import numpy as np
+
+def get_mnist():
+    def read_data(label_url, image_url):
+        with gzip.open(label_url) as flbl:
+            struct.unpack(">II", flbl.read(8))
+            label = np.frombuffer(flbl.read(), dtype=np.int8)
+        with gzip.open(image_url, 'rb') as fimg:
+            _, _, rows, cols = struct.unpack(">IIII", fimg.read(16))
+            image = np.frombuffer(fimg.read(), dtype=np.uint8).reshape(len(label), rows, cols)
+            image = image.reshape(image.shape[0], 1, 28, 28).astype(np.float32)/255
+        return (label, image)
+    path="D:\\pen\\"
+    (train_lbl, train_img) = read_data(
+        path+'train-labels-idx1-ubyte.gz', path+'train-images-idx3-ubyte.gz')
+    (test_lbl, test_img) = read_data(
+        path+'t10k-labels-idx1-ubyte.gz', path+'t10k-images-idx3-ubyte.gz')
+    return {'train_data':train_img, 'train_label':train_lbl,
+            'test_data':test_img, 'test_label':test_lbl}
+
+
+class fit:
+  def __init__(self,batch_size=1000):
+    self.b=0
+    self.batch_size=batch_size
+    self.train_data = mx.io.NDArrayIter(mnist['train_data'], mnist['train_label'], self.batch_size, shuffle=True)
+    self.val_data = mx.io.NDArrayIter(mnist['test_data'], mnist['test_label'], self.batch_size)
+  def loop(self,epoch):
+    self.b+=epoch
+    rr1,rr2,rr3=mx.nd.array(0.5,ctx=ctx).broadcast_to((batch_size*3,)).expand_dims(1).split(num_outputs=3,axis=0)
+    for i in range(self.b-epoch,self.b):
+        self.train_data.reset()
+        for batch in self.train_data:
+            data = gluon.utils.split_and_load(batch.data[0], ctx_list=[ctx], batch_axis=0)
+            label = gluon.utils.split_and_load(batch.label[0], ctx_list=[ctx], batch_axis=0)
+            outputs = []
+            with ag.record():
+                for x, y in zip(data, label):
+                    r1,r2,r3=mx.nd.random.uniform(shape=batch_size*3,ctx=ctx).expand_dims(1).split(num_outputs=3,axis=0)
+                    z = net(x,r1,r2,r3)
+                    loss = softmax_cross_entropy_loss(z, y)
+                    loss.backward()
+                    outputs.append(z)
+            metric.update(label, outputs)
+            trainer.step(batch.data[0].shape[0])
+        name, acc = metric.get()
+        metric.reset()
+        Ccc='training acc at epoch %d: %s=%f'%(i, name, acc)
+        self.val_data.reset()
+        for batch in self.val_data:
+            data = gluon.utils.split_and_load(batch.data[0], ctx_list=[ctx], batch_axis=0)
+            label = gluon.utils.split_and_load(batch.label[0], ctx_list=[ctx], batch_axis=0)
+            outputs = []
+            for x in data:
+                r1,r2,r3=mx.nd.random.uniform(shape=batch_size*3,ctx=ctx).expand_dims(1).split(num_outputs=3,axis=0)
+                outputs.append(net(x,r1,r2,r3))
+            metric.update(label, outputs)
+        Ddd=' validation acc: %s=%f'%metric.get()
+        self.val_data.reset()
+        for batch in self.val_data:
+            data = gluon.utils.split_and_load(batch.data[0], ctx_list=[ctx], batch_axis=0)
+            label = gluon.utils.split_and_load(batch.label[0], ctx_list=[ctx], batch_axis=0)
+            outputs = []
+            for x in data:
+                outputs.append(net(x,rr1,rr2,rr3))
+            metric.update(label, outputs)
+        print(Ccc+Ddd+' %s2=%f'%metric.get())
+
+
+
+# Fixing the random seed
+mx.random.seed(42)
+
+mnist = get_mnist()
+
+import mxnet as mx
+from mxnet import gluon
+from mxnet.gluon import nn
+from mxnet import autograd as ag
+
+
+with mx.gluon.nn.Block().name_scope() as b:
+ batch_size=1000
+ net_shape=(1000,1,28,28)#train_data.next().data[0].shape
+ data  = mx.sym.var('data',shape=net_shape,dtype='float32')
+ #rd    = mx.sym.var('r',shape=net_shape[0]*3,dtype='float32')
+ rel10 = mx.sym.var('r1',shape=net_shape[0],dtype='float32')
+ rel20 = mx.sym.var('r2',shape=net_shape[0],dtype='float32')
+ rel30 = mx.sym.var('r3',shape=net_shape[0],dtype='float32')
+ #rel10,rel20,rel30 = rd.split(num_outputs=3,axis=0)
+ rel11=nn.Dense(128, activation='relu')(data)
+ rel12=nn.Dense(128, activation='relu')(data)
+ #rel10=mx.sym.random.uniform(shape=rel11.infer_shape()[1][0][0]).expand_dims(1).broadcast_axes(axis=1,size=128)
+ rel1=mx.sym.broadcast_mul(rel11,rel10)+mx.sym.broadcast_mul(rel12,1-rel10)
+ rel21=nn.Dense(64, activation='relu')(rel1)
+ rel22=nn.Dense(64, activation='relu')(rel1)
+ #rel20=mx.sym.random.uniform(shape=rel21.infer_shape()[1][0][0]).expand_dims(1).broadcast_axes(axis=1,size=64)
+ rel2=mx.sym.broadcast_mul(rel21,rel20)+mx.sym.broadcast_mul(rel22,1-rel20)
+ rel31=nn.Dense(10, activation='relu')(rel2)
+ rel32=nn.Dense(10, activation='relu')(rel2)
+ #rel30=mx.sym.random.uniform(shape=rel31.infer_shape()[1][0][0]).expand_dims(1).broadcast_axes(axis=1,size=10)
+ rel3=mx.sym.broadcast_mul(rel31,rel30)+mx.sym.broadcast_mul(rel32,1-rel30)
+ net=mx.gluon.SymbolBlock(rel3,[data,rel10,rel20,rel30])
+ func=fit(batch_size)
+
+
+gpus = mx.test_utils.list_gpus()
+ctx =  mx.gpu() if gpus else [mx.cpu(0), mx.cpu(1)]
+net.initialize(mx.init.Uniform(), ctx=ctx,force_reinit=True)
+trainer = gluon.Trainer(net.collect_params(), 'sgd', {'learning_rate': 0.5})
+#trainer = gluon.Trainer(net.collect_params(), 'nadam', {'learning_rate': 0.2})
+
+loop=20
+epoch = 200
+# Use Accuracy as the evaluation metric.
+metric = mx.metric.Accuracy()
+softmax_cross_entropy_loss = gluon.loss.SoftmaxCrossEntropyLoss()
+
+
+func.loop(30)
+trainer = gluon.Trainer(net.collect_params(), 'sgd', {'learning_rate': 0.25})
+func.loop(30)
+trainer = gluon.Trainer(net.collect_params(), 'sgd', {'learning_rate': 0.125})
+func.loop(30)
+trainer = gluon.Trainer(net.collect_params(), 'sgd', {'learning_rate': 0.0625})
+func.loop(30)
+
+#CIFAR for mnist
+
+import argparse, time, logging, random, math
+
+import numpy as np
+import mxnet as mx
+
+from mxnet import gluon, nd
+from mxnet import autograd as ag
+from mxnet.gluon import nn
+from mxnet.gluon.data.vision import transforms
+
+from gluoncv.model_zoo import get_model
+from gluoncv.utils import makedirs, TrainingHistory
+from gluoncv.data import transforms as gcv_transforms
+
+num_gpus = 1
+ctx = [mx.gpu(i) for i in range(num_gpus)]
+"""
+transform_train = transforms.Compose([
+    # Randomly crop an area and resize it to be 32x32, then pad it to be 40x40
+    gcv_transforms.RandomCrop(32, pad=4),
+    # Randomly flip the image horizontally
+    transforms.RandomFlipLeftRight(),
+    # Transpose the image from height*width*num_channels to num_channels*height*width
+    # and map values from [0, 255] to [0,1]
+    transforms.ToTensor(),
+    # Normalize the image with mean and standard deviation calculated across all images
+    transforms.Normalize([0.4914, 0.4822, 0.4465], [0.2023, 0.1994, 0.2010])
+])
+net0=nn.Sequential()
+with net0.name_scope():
+    net0.add(gcv_transforms.RandomCrop(32, pad=4))
+    net0.add(transforms.RandomFlipLeftRight())
+    net0.add(transforms.ToTensor())
+    net0.add(transforms.Normalize([0.4914, 0.4822, 0.4465], [0.2023, 0.1994, 0.2010]))
+"""
+
+
+transform_train = transforms.Compose([
+    # Randomly crop an area and resize it to be 32x32, then pad it to be 40x40
+    gcv_transforms.RandomCrop(32, pad=4),
+    # Randomly flip the image horizontally
+    transforms.RandomFlipLeftRight(),
+    # Transpose the image from height*width*num_channels to num_channels*height*width
+    # and map values from [0, 255] to [0,1]
+    transforms.ToTensor(),
+    # Normalize the image with mean and standard deviation calculated across all images
+    transforms.Normalize([0.4914, 0.4822, 0.4465], [0.2023, 0.1994, 0.2010])
+])
+
+transform_test = transforms.Compose([
+    transforms.ToTensor(),
+    transforms.Normalize([0.4914, 0.4822, 0.4465], [0.2023, 0.1994, 0.2010])
+])
+
+
+# Batch Size for Each GPU
+per_device_batch_size = 128*4
+# Number of data loader workers
+num_workers = 3
+# Calculate effective total batch size
+batch_size = per_device_batch_size * num_gpus
+
+
+net = get_model('cifar_resnet20_v1', classes=10)
+net.initialize(mx.init.Xavier(), ctx = ctx)
+
+
+#"""num_workers=8.transform_first(transform_train)
+train_data = gluon.data.DataLoader(
+    gluon.data.vision.CIFAR10(train=True).transform_first(transform_train),
+    batch_size=batch_size, shuffle=True, last_batch='discard', num_workers=num_workers)
+
+# Set train=False for validation data
+val_data = gluon.data.DataLoader(
+    gluon.data.vision.CIFAR10(train=False).transform_first(transform_test,lazy=False),
+    batch_size=batch_size, shuffle=False)
+"""
+
+# Get the model CIFAR_ResNet20_v1, with 10 output classes, without pre-trained weights
+
+# Set train=True for training data
+# Set shuffle=True to shuffle the training data
+train_data = gluon.data.DataLoader(
+    gluon.data.vision.CIFAR10(train=True).transform_first(transform_train,lazy=False),
+    batch_size=batch_size, shuffle=True, last_batch='discard')
+
+# Set train=False for validation data
+val_data = gluon.data.DataLoader(
+    gluon.data.vision.CIFAR10(train=False).transform_first(transform_test,lazy=False),
+    batch_size=batch_size, shuffle=False)
+"""
+
+# Learning rate decay factor
+lr_decay = 0.1
+# Epochs where learning rate decays
+lr_decay_epoch = [80, 160, np.inf]
+
+# Nesterov accelerated gradient descent
+optimizer = 'nag'
+# Set parameters
+optimizer_params = {'learning_rate': 0.1, 'wd': 0.0001, 'momentum': 0.9}
+
+# Define our trainer for net
+trainer = gluon.Trainer(net.collect_params(), optimizer, optimizer_params)
+loss_fn = gluon.loss.SoftmaxCrossEntropyLoss()
+
+train_metric = mx.metric.Accuracy()
+train_history = TrainingHistory(['training-error', 'validation-error'])
+
+def test(ctx, val_data):
+    metric = mx.metric.Accuracy()
+    for i, batch in enumerate(val_data):
+        data = gluon.utils.split_and_load(batch[0], ctx_list=ctx, batch_axis=0)
+        label = gluon.utils.split_and_load(batch[1], ctx_list=ctx, batch_axis=0)
+        outputs = [net(X) for X in data]
+        metric.update(label, outputs)
+    return metric.get()
+
+
+epochs = 30
+lr_decay_count = 0
+
+for epoch in range(epochs):
+    tic = time.time()
+    train_metric.reset()
+    train_loss = 0
+ 
+    # Learning rate decay
+    if epoch == lr_decay_epoch[lr_decay_count]:
+        trainer.set_learning_rate(trainer.learning_rate*lr_decay)
+        lr_decay_count += 1
+ 
+    # Loop through each batch of training data
+    for i, batch in enumerate(train_data):
+        # Extract data and label
+        data = gluon.utils.split_and_load(batch[0], ctx_list=ctx, batch_axis=0)
+        label = gluon.utils.split_and_load(batch[1], ctx_list=ctx, batch_axis=0)
+ 
+        # AutoGrad
+        with ag.record():
+            output = [net(X) for X in data]
+            loss = [loss_fn(yhat, y) for yhat, y in zip(output, label)]
+ 
+        # Backpropagation
+        for l in loss:
+            l.backward()
+ 
+        # Optimize
+        trainer.step(batch_size)
+ 
+        # Update metrics
+        train_loss += sum([l.sum().asscalar() for l in loss])
+        train_metric.update(label, output)
+ 
+    name, acc = train_metric.get()
+    # Evaluate on Validation data
+    name, val_acc = test(ctx, val_data)
+ 
+    # Update history and print metrics
+    train_history.update([1-acc, 1-val_acc])
+    print('[Epoch %d] train=%f val=%f loss=%f time: %f' %
+        (epoch, acc, val_acc, train_loss, time.time()-tic))
+
+
+# We can plot the metric scores with:
+
+train_history.plot()
